@@ -1,161 +1,136 @@
 import pygame
 import sys
 
-# --- КОНСТАНТЫ И НАСТРОЙКИ ---
+# --- НАСТРОЙКИ ЭКРАНА ---
 pygame.init()
-SCREEN_WIDTH = 800
+# Можешь менять эти значения, персонажи подстроятся сами
+SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 600
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Платформер с физикой")
+pygame.display.set_caption("Платформер: Динамический масштаб")
 clock = pygame.time.Clock()
 
-# Цвета
-SKY_BLUE = (135, 206, 235)
-GROUND_COLOR = (34, 139, 34)
+# --- ФИЗИКА И МИР ---
+GRAVITY = 0.8
+JUMP_FORCE = -16
+GROUND_LEVEL_OFFSET = 100 # Высота земли от нижнего края
+GROUND_Y = SCREEN_HEIGHT - GROUND_LEVEL_OFFSET
 
-# Настройки мира
-GROUND_LEVEL = SCREEN_HEIGHT - 100 
-GRAVITY = 0.8       # Сила притяжения (чем больше, тем тяжелее персонаж)
-JUMP_FORCE = -15    # Сила прыжка (чем меньше число, тем выше прыжок, т.к. ось Y идет вниз)
+# --- ДИНАМИЧЕСКИЙ МАСШТАБ ---
+# Вычисляем масштаб так, чтобы персонаж был высотой примерно 1/6 экрана
+# Если твои исходные спрайты около 100px, этот коэффициент сделает их идеальными
+CHAR_TARGET_HEIGHT = SCREEN_HEIGHT * 0.15 
 
-# МАСШТАБ
-# Если спрайты большие — ставь 0.2 или 0.3
-# Если спрайты маленькие (пиксельные) — ставь 2.0 или 3.0
-SCALE_FACTOR = 0.25 
-
-# --- ФУНКЦИЯ ЗАГРУЗКИ ---
-def load_scaled_image(path, scale):
+def load_and_scale(path, target_h):
     try:
         img = pygame.image.load(path).convert_alpha()
+        # Вычисляем коэффициент пропорционально целевой высоте
+        scale = target_h / img.get_height()
         new_size = (int(img.get_width() * scale), int(img.get_height() * scale))
-        # Используем scale, а не smoothscale для пиксель-арта, чтобы было четче
-        return pygame.transform.scale(img, new_size) 
-    except pygame.error as e:
-        print(f"Не найден файл: {path}")
-        sys.exit()
+        return pygame.transform.scale(img, new_size)
+    except:
+        # Если файла нет, создаем цветной квадрат, чтобы код не вылетал
+        surf = pygame.Surface((30, 50))
+        surf.fill((255, 0, 0))
+        return surf
 
-# --- ЗАГРУЗКА СПРАЙТОВ (Твои новые названия) ---
-# 1. Анимация покоя (дыхание)
-anim_idle_right = [
-    load_scaled_image('sprites/stoit1.png', SCALE_FACTOR),
-    #load_scaled_image('sprites/stoit2.png', SCALE_FACTOR)
-]
-
-# 2. Анимация бега
-anim_run_right = [
-    load_scaled_image('sprites/run1.png', SCALE_FACTOR),
-    load_scaled_image('sprites/run4.png', SCALE_FACTOR),
-
-]
-
-# 3. Прыжок и падение
-img_jump_right = load_scaled_image('sprites/jumpup.png', SCALE_FACTOR)
-img_fall_right = load_scaled_image('sprites/falldown.png', SCALE_FACTOR)
-
-# --- СОЗДАНИЕ ЗЕРКАЛЬНЫХ КОПИЙ (ВЛЕВО) ---
-def flip_list(images):
-    return [pygame.transform.flip(img, True, False) for img in images]
-
-anim_idle_left = flip_list(anim_idle_right)
-anim_run_left = flip_list(anim_run_right)
-img_jump_left = pygame.transform.flip(img_jump_right, True, False)
-img_fall_left = pygame.transform.flip(img_fall_right, True, False)
-
-# Берем размеры персонажа по первому кадру
-CHAR_WIDTH = anim_idle_right[0].get_width()
-CHAR_HEIGHT = anim_idle_right[0].get_height()
-
-# --- ПЕРЕМЕННЫЕ ИГРОКА ---
-player_x = 50
-player_y = GROUND_LEVEL - CHAR_HEIGHT
-player_speed = 5
-player_vel_y = 0      # Вертикальная скорость (для прыжков)
-is_jumping = False    # Находится ли персонаж в воздухе
-last_dir_left = False # Куда смотрел в последний раз
-anim_count = 0        # Счетчик анимации
-
-# --- ОТРИСОВКА ---
-def draw_window():
-    global anim_count
-    
-    screen.fill(SKY_BLUE)
-    pygame.draw.rect(screen, GROUND_COLOR, (0, GROUND_LEVEL, SCREEN_WIDTH, SCREEN_HEIGHT - GROUND_LEVEL))
-
-    # Определяем, какой спрайт рисовать
-    current_image = None
-    
-    # 1. Если персонаж в воздухе (ПРЫЖОК или ПАДЕНИЕ)
-    if is_jumping:
-        if player_vel_y < 0: # Летит вверх
-            current_image = img_jump_left if last_dir_left else img_jump_right
-        else: # Летит вниз
-            current_image = img_fall_left if last_dir_left else img_fall_right
-    
-    # 2. Если персонаж на земле
-    else:
-        keys = pygame.key.get_pressed()
-        # Замедляем анимацию (меняем кадр каждые 10 тиков)
-        speed_div = 10 
+# --- КЛАСС ИГРОКА ---
+class Player:
+    def __init__(self, x, controls, paths):
+        self.idle_r = [load_and_scale(paths['idle'], CHAR_TARGET_HEIGHT)]
+        self.run_r = [load_and_scale(p, CHAR_TARGET_HEIGHT) for p in paths['run']]
+        self.jump_r = load_and_scale(paths['jump'], CHAR_TARGET_HEIGHT)
+        self.fall_r = load_and_scale(paths['fall'], CHAR_TARGET_HEIGHT)
         
-        if keys[pygame.K_LEFT] or keys[pygame.K_RIGHT]:
-            # БЕГ
-            frames = anim_run_left if last_dir_left else anim_run_right
-            if anim_count >= len(frames) * speed_div:
-                anim_count = 0
-            current_image = frames[anim_count // speed_div]
-            anim_count += 1
-        else:
-            # ПОКОЙ (IDLE) - тоже анимируем (stoit1 -> stoit2)
-            # Делаем дыхание медленнее (каждые 20 тиков)
-            idle_speed_div = 20
-            frames = anim_idle_left if last_dir_left else anim_idle_right
-            if anim_count >= len(frames) * idle_speed_div:
-                anim_count = 0
-            current_image = frames[anim_count // idle_speed_div]
-            anim_count += 1
+        # Отражение для движения влево
+        self.idle_l = [pygame.transform.flip(img, True, False) for img in self.idle_r]
+        self.run_l = [pygame.transform.flip(img, True, False) for img in self.run_r]
+        self.jump_l = pygame.transform.flip(self.jump_r, True, False)
+        self.fall_l = pygame.transform.flip(self.fall_r, True, False)
 
-    screen.blit(current_image, (player_x, player_y))
-    pygame.display.update()
+        self.rect = self.idle_r[0].get_rect(topleft=(x, GROUND_Y - 100))
+        self.controls = controls
+        self.vel_y = 0
+        self.is_jumping = False
+        self.look_left = False
+        self.anim_count = 0
+        self.moving = False
+
+    def handle_input(self):
+        keys = pygame.key.get_pressed()
+        self.moving = False
+        
+        if keys[self.controls['left']] and self.rect.left > 0:
+            self.rect.x -= 6
+            self.look_left = True
+            self.moving = True
+        if keys[self.controls['right']] and self.rect.right < SCREEN_WIDTH:
+            self.rect.x += 6
+            self.look_left = False
+            self.moving = True
+            
+    def jump(self):
+        if not self.is_jumping:
+            self.vel_y = JUMP_FORCE
+            self.is_jumping = True
+
+    def apply_physics(self):
+        self.vel_y += GRAVITY
+        self.rect.y += self.vel_y
+        
+        if self.rect.bottom >= GROUND_Y:
+            self.rect.bottom = GROUND_Y
+            self.vel_y = 0
+            self.is_jumping = False
+
+    def draw(self):
+        self.anim_count += 1
+        div = 8 # Скорость анимации
+        
+        # Выбор текущего спрайта
+        if self.is_jumping:
+            if self.vel_y < 0:
+                img = self.jump_l if self.look_left else self.jump_r
+            else:
+                img = self.fall_l if self.look_left else self.fall_r
+        elif self.moving:
+            frames = self.run_l if self.look_left else self.run_r
+            img = frames[(self.anim_count // div) % len(frames)]
+        else:
+            frames = self.idle_l if self.look_left else self.idle_r
+            img = frames[(self.anim_count // div) % len(frames)]
+            
+        screen.blit(img, self.rect)
+
+# --- СОЗДАНИЕ ПЕРСОНАЖЕЙ ---
+player1 = Player(200, 
+    {'left': pygame.K_a, 'right': pygame.K_d, 'up': pygame.K_w}, 
+    {'idle': 'sprites/stoit1.png', 'run': ['sprites/run1.png', 'sprites/run2.png'], 
+     'jump': 'sprites/jumpup.png', 'fall': 'sprites/falldown.png'})
+
+player2 = Player(600, 
+    {'left': pygame.K_LEFT, 'right': pygame.K_RIGHT, 'up': pygame.K_UP}, 
+    {'idle': 'sprites/Kstoit.png', 'run': ['sprites/Krun1.png', 'sprites/Krun2.png'], 
+     'jump': 'sprites/Kjump1.png', 'fall': 'sprites/Kfall1.png'})
 
 # --- ГЛАВНЫЙ ЦИКЛ ---
 while True:
-    clock.tick(60) # 60 FPS
-    
+    screen.fill((135, 206, 235)) # Небо
+    pygame.draw.rect(screen, (34, 139, 34), (0, GROUND_Y, SCREEN_WIDTH, GROUND_LEVEL_OFFSET)) # Земля
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        
-        # Обработка нажатия прыжка (одиночное нажатие)
+            pygame.quit(); sys.exit()
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE and not is_jumping:
-                player_vel_y = JUMP_FORCE
-                is_jumping = True
+            if event.key == pygame.K_SPACE or event.key == pygame.K_w:
+                player1.jump()
+            if event.key == pygame.K_UP:
+                player2.jump()
 
-    keys = pygame.key.get_pressed()
+    for p in [player1, player2]:
+        p.handle_input()
+        p.apply_physics()
+        p.draw()
 
-    # Движение влево/вправо
-    if keys[pygame.K_LEFT] and player_x > 0:
-        player_x -= player_speed
-        last_dir_left = True
-    elif keys[pygame.K_RIGHT] and player_x < SCREEN_WIDTH - CHAR_WIDTH:
-        player_x += player_speed
-        last_dir_left = False
-    else:
-        # Если стоим и не прыгаем, не сбрасываем anim_count полностью, 
-        # чтобы анимация "дыхания" не дергалась, но это опционально.
-        pass
-
-    # --- ФИЗИКА ---
-    player_vel_y += GRAVITY       # Применяем гравитацию
-    player_y += player_vel_y      # Двигаем персонажа по вертикали
-
-    # Проверка столкновения с землей
-    if player_y + CHAR_HEIGHT >= GROUND_LEVEL:
-        player_y = GROUND_LEVEL - CHAR_HEIGHT # Ставим ровно на землю
-        is_jumping = False
-        player_vel_y = 0
-    else:
-        is_jumping = True # Если мы выше земли, значит мы падаем или прыгаем
-
-    draw_window()
+    pygame.display.update()
+    clock.tick(60)
